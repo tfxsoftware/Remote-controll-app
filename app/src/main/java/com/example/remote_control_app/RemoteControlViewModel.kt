@@ -220,6 +220,56 @@ class RemoteControlViewModel : ViewModel() {
         send(json)
     }
 
+    fun sendSpecialKey(key: String) {
+        // Send common special keys
+        when (key.lowercase()) {
+            "backspace" -> sendKeyPress("backspace")
+            "delete" -> sendKeyPress("delete")
+            "enter" -> sendKeyPress("enter")
+            "tab" -> sendKeyPress("tab")
+            "escape" -> sendKeyPress("escape")
+            "space" -> sendKeyPress("space")
+            "up" -> sendKeyPress("up")
+            "down" -> sendKeyPress("down")
+            "left" -> sendKeyPress("left")
+            "right" -> sendKeyPress("right")
+            "home" -> sendKeyPress("home")
+            "end" -> sendKeyPress("end")
+            "pageup" -> sendKeyPress("pageup")
+            "pagedown" -> sendKeyPress("pagedown")
+            "f1" -> sendKeyPress("f1")
+            "f2" -> sendKeyPress("f2")
+            "f3" -> sendKeyPress("f3")
+            "f4" -> sendKeyPress("f4")
+            "f5" -> sendKeyPress("f5")
+            "f6" -> sendKeyPress("f6")
+            "f7" -> sendKeyPress("f7")
+            "f8" -> sendKeyPress("f8")
+            "f9" -> sendKeyPress("f9")
+            "f10" -> sendKeyPress("f10")
+            "f11" -> sendKeyPress("f11")
+            "f12" -> sendKeyPress("f12")
+            else -> sendKeyPress(key)
+        }
+    }
+    
+    fun sendKeyCombination(keys: List<String>) {
+        val json = JSONObject()
+        json.put("type", "multiple_keys")
+        json.put("keys", JSONObject().apply {
+            put("keys", JSONObject().apply {
+                keys.forEach { put("key", it) }
+            })
+        })
+        Log.d(TAG, "Sending key combination: $json")
+        send(json)
+    }
+    
+    fun sendHotkey(vararg keys: String) {
+        val keyString = keys.joinToString("+")
+        sendKeyPress(keyString)
+    }
+
     private fun send(json: JSONObject) {
         viewModelScope.launch(Dispatchers.IO) {
             val message = json.toString()

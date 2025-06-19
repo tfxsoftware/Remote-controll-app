@@ -13,6 +13,16 @@ import androidx.compose.ui.unit.dp
 fun KeyboardScreen(viewModel: RemoteControlViewModel) {
     var text by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        // Backspace button above the text input
+        Button(
+            onClick = { viewModel.sendSpecialKey("backspace") },
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = 8.dp)
+        ) {
+            Text("⌫ Backspace")
+        }
+        
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
