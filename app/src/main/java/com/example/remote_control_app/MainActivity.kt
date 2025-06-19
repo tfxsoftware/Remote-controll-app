@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
 fun RemoteControlApp(viewModel: RemoteControlViewModel) {
     val pagerState = rememberPagerState()
     val coroutineScope = rememberCoroutineScope()
-    val tabs = listOf("Mouse", "Keyboard")
+    val tabs = listOf("Mouse", "Keyboard", "System")
 
     Scaffold(
         topBar = {
@@ -61,6 +61,7 @@ fun RemoteControlApp(viewModel: RemoteControlViewModel) {
             when (page) {
                 0 -> MouseScreen(viewModel)
                 1 -> KeyboardScreen(viewModel)
+                2 -> SystemScreen(viewModel)
             }
         }
     }

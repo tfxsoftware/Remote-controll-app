@@ -50,6 +50,10 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     
+    // Material Icons
+    implementation("androidx.compose.material:material-icons-core:1.6.0")
+    implementation("androidx.compose.material:material-icons-extended:1.6.0")
+    
     // WebSocket client
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     

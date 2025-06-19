@@ -223,6 +223,7 @@ class RemoteControlViewModel : ViewModel() {
     fun sendSpecialKey(key: String) {
         // Send common special keys
         when (key.lowercase()) {
+            // Navigation keys
             "backspace" -> sendKeyPress("backspace")
             "delete" -> sendKeyPress("delete")
             "enter" -> sendKeyPress("enter")
@@ -237,6 +238,8 @@ class RemoteControlViewModel : ViewModel() {
             "end" -> sendKeyPress("end")
             "pageup" -> sendKeyPress("pageup")
             "pagedown" -> sendKeyPress("pagedown")
+            
+            // Function keys
             "f1" -> sendKeyPress("f1")
             "f2" -> sendKeyPress("f2")
             "f3" -> sendKeyPress("f3")
@@ -249,6 +252,27 @@ class RemoteControlViewModel : ViewModel() {
             "f10" -> sendKeyPress("f10")
             "f11" -> sendKeyPress("f11")
             "f12" -> sendKeyPress("f12")
+            
+            // Media keys
+            "volumeup", "volup" -> sendKeyPress("volumeup")
+            "volumedown", "voldown" -> sendKeyPress("volumedown")
+            "volumemute", "mute" -> sendKeyPress("volumemute")
+            "play" -> sendKeyPress("play")
+            "pause" -> sendKeyPress("pause")
+            "stop" -> sendKeyPress("stop")
+            "nexttrack", "next" -> sendKeyPress("nexttrack")
+            "prevtrack", "previous" -> sendKeyPress("prevtrack")
+            
+            // Browser keys
+            "browserback", "back" -> sendKeyPress("browserback")
+            "browserforward", "forward" -> sendKeyPress("browserforward")
+            "browserrefresh", "refresh" -> sendKeyPress("browserrefresh")
+            "browserstop" -> sendKeyPress("browserstop")
+            "browsersearch", "search" -> sendKeyPress("browsersearch")
+            "browserfavorites", "favorites" -> sendKeyPress("browserfavorites")
+            "browserhome", "homepage" -> sendKeyPress("browserhome")
+            
+            // Default case
             else -> sendKeyPress(key)
         }
     }
