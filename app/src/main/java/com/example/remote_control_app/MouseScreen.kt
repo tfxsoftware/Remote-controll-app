@@ -11,10 +11,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
-teating
+
 @Composable
 fun MouseScreen(viewModel: RemoteControlViewModel) {
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        // Connection status indicator
+        ConnectionStatusIndicator(viewModel.connectionState.value, viewModel::manualReconnect)
+        
         Box(
             Modifier
                 .weight(1f)
@@ -34,6 +37,50 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             Button(onClick = { viewModel.sendMouseClick("left") }) { Text("Left Click") }
             Button(onClick = { viewModel.sendMouseClick("right") }) { Text("Right Click") }
+        }
+    }
+}
+
+@Composable
+fun ConnectionStatusIndicator(
+    connectionState: ConnectionState,
+    onManualReconnect: () -> Unit
+) {
+    val backgroundColor = when (connectionState) {
+        ConnectionState.CONNECTED -> Color.Green
+        ConnectionState.CONNECTING -> Color.Yellow
+        ConnectionState.RECONNECTING -> Color(0xFFFF8C00) // Dark Orange
+        ConnectionState.DISCONNECTED -> Color.Red
+    }
+    
+    val text = when (connectionState) {
+        ConnectionState.CONNECTED -> "Connected"
+        ConnectionState.CONNECTING -> "Connecting..."
+        ConnectionState.RECONNECTING -> "Reconnecting..."
+        ConnectionState.DISCONNECTED -> "Disconnected"
+    }
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(backgroundColor.copy(alpha = 0.2f))
+            .padding(8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            color = backgroundColor,
+            modifier = Modifier.weight(1f)
+        )
+        
+        if (connectionState == ConnectionState.DISCONNECTED) {
+            Button(
+                onClick = onManualReconnect,
+                modifier = Modifier.padding(start = 8.dp)
+            ) {
+                Text("Reconnect")
+            }
         }
     }
 } 
