@@ -18,7 +18,7 @@ class RemoteControlViewModel : ViewModel() {
     private var discoveredServer: NsdServiceInfo? = null
     
     private val SERVICE_TYPE = "_remote-control._tcp."
-    private val SERVICE_NAME = "remote-tv-server"
+    private val SERVICE_NAME = "remote-control"
     
     companion object {
         private const val TAG = "RemoteControlViewModel"
@@ -28,6 +28,9 @@ class RemoteControlViewModel : ViewModel() {
         Log.d(TAG, "Initializing mDNS discovery...")
         nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
         discoverServices()
+        
+        // Also try direct connection to domain name as fallback
+        connectToDomainName()
     }
 
     private fun discoverServices() {
@@ -116,6 +119,12 @@ class RemoteControlViewModel : ViewModel() {
                 Log.d(TAG, "WebSocket connection closed: $code - $reason")
             }
         })
+    }
+
+    private fun connectToDomainName() {
+        Log.d(TAG, "Attempting direct connection to server IP...")
+        // Use the direct IP address since domain resolution isn't working
+        connectWebSocket("192.168.0.8", 8765)
     }
 
     fun sendMouseMove(x: Int, y: Int, relative: Boolean) {

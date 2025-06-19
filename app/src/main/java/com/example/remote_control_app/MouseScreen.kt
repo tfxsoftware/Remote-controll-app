@@ -11,7 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
-
+teating
 @Composable
 fun MouseScreen(viewModel: RemoteControlViewModel) {
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
