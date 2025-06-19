@@ -2,6 +2,7 @@ package com.example.remote_control_app
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -55,6 +56,14 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
                             viewModel.sendMouseMove(dx.toInt(), dy.toInt(), relative = true)
                             change.consume()
                         }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                // Send left click on tap
+                                viewModel.sendMouseClick("left")
+                            }
+                        )
                     },
                 contentAlignment = Alignment.Center
             ) {
@@ -76,7 +85,7 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
                         color = Color(0xFF1976D2)
                     )
                     Text(
-                        text = "Drag to move mouse",
+                        text = "Drag to move mouse • Tap to click",
                         fontSize = 14.sp,
                         color = Color(0xFF757575)
                     )
@@ -86,44 +95,22 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        // Mouse buttons
-        Row(
+        // Right click button (full width)
+        ElevatedButton(
+            onClick = { viewModel.sendMouseClick("right") },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            colors = ButtonDefaults.elevatedButtonColors(
+                containerColor = Color(0xFFFF4081)
+            ),
+            shape = RoundedCornerShape(12.dp)
         ) {
-            ElevatedButton(
-                onClick = { viewModel.sendMouseClick("left") },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.elevatedButtonColors(
-                    containerColor = Color(0xFF2196F3)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Left Click",
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Left Click", fontWeight = FontWeight.Medium)
-            }
-            
-            ElevatedButton(
-                onClick = { viewModel.sendMouseClick("right") },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.elevatedButtonColors(
-                    containerColor = Color(0xFFFF4081)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Right Click",
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Right Click", fontWeight = FontWeight.Medium)
-            }
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = "Right Click",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Right Click", fontWeight = FontWeight.Medium)
         }
     }
 }
