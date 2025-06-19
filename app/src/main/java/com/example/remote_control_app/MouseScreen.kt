@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun MouseScreen(viewModel: RemoteControlViewModel) {
+    var text by remember { mutableStateOf("") }
+    
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -93,9 +95,9 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
             }
         }
         
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         
-        // Right click button (full width)
+        // Right click button (directly under touchpad)
         ElevatedButton(
             onClick = { viewModel.sendMouseClick("right") },
             modifier = Modifier.fillMaxWidth(),
@@ -104,13 +106,75 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
             ),
             shape = RoundedCornerShape(12.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "Right Click",
-                modifier = Modifier.size(20.dp)
+            Text(
+                "Right Click",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium
             )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Right Click", fontWeight = FontWeight.Medium)
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Keyboard input area with backspace button
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                // Text input field
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { newText ->
+                        // Send each new character individually and clear the field
+                        if (newText.length > text.length) {
+                            val newChar = newText.last()
+                            viewModel.sendKeyType(newChar.toString())
+                            // Clear the text immediately to simulate real keyboard behavior
+                            text = ""
+                        } else {
+                            text = newText
+                        }
+                    },
+                    label = { 
+                        Text(
+                            "Type here - keystrokes sent directly to PC",
+                            color = Color(0xFF757575)
+                        ) 
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF2196F3),
+                        unfocusedBorderColor = Color(0xFFE0E0E0),
+                        focusedLabelColor = Color(0xFF2196F3)
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    minLines = 1,
+                    maxLines = 2
+                )
+                
+                // Backspace button
+                ElevatedButton(
+                    onClick = { viewModel.sendSpecialKey("backspace") },
+                    modifier = Modifier.height(56.dp),
+                    colors = ButtonDefaults.elevatedButtonColors(
+                        containerColor = Color(0xFFFF5722)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        "⌫",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
     }
 }

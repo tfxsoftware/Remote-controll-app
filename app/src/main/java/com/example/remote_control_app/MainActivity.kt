@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
 fun RemoteControlApp(viewModel: RemoteControlViewModel) {
     val pagerState = rememberPagerState()
     val coroutineScope = rememberCoroutineScope()
-    val tabs = listOf("Mouse", "Keyboard", "System")
+    val tabs = listOf("Control", "System")
 
     Scaffold(
         topBar = {
@@ -60,8 +60,7 @@ fun RemoteControlApp(viewModel: RemoteControlViewModel) {
         HorizontalPager(count = tabs.size, state = pagerState, modifier = Modifier.padding(innerPadding)) { page ->
             when (page) {
                 0 -> MouseScreen(viewModel)
-                1 -> KeyboardScreen(viewModel)
-                2 -> SystemScreen(viewModel)
+                1 -> SystemScreen(viewModel)
             }
         }
     }
