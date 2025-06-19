@@ -4,18 +4,38 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
+import androidx.compose.runtime.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.*
 import org.json.JSONObject
+
+enum class ConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    RECONNECTING
+}
 
 class RemoteControlViewModel : ViewModel() {
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient()
     private var nsdManager: NsdManager? = null
     private var discoveredServer: NsdServiceInfo? = null
+    
+    // Connection state management
+    private val _connectionState = mutableStateOf(ConnectionState.DISCONNECTED)
+    val connectionState: State<ConnectionState> = _connectionState
+    
+    // Connection healing
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private var isReconnecting = false
+    private val maxReconnectAttempts = 5
+    private var reconnectAttempts = 0
+    private val reconnectDelayMs = 2000L // Start with 2 seconds
     
     private val SERVICE_TYPE = "_remote-control._tcp."
     private val SERVICE_NAME = "remote-control"
@@ -26,11 +46,18 @@ class RemoteControlViewModel : ViewModel() {
 
     fun initializeDiscovery(context: Context) {
         Log.d(TAG, "Initializing mDNS discovery...")
+        _connectionState.value = ConnectionState.CONNECTING
         nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
         discoverServices()
         
-        // Also try direct connection to domain name as fallback
-        connectToDomainName()
+        // Try domain name connection as fallback after a delay
+        viewModelScope.launch {
+            delay(3000) // Wait 3 seconds for mDNS discovery
+            if (_connectionState.value != ConnectionState.CONNECTED) {
+                Log.d(TAG, "mDNS discovery failed, trying domain name...")
+                connectToDomainName()
+            }
+        }
     }
 
     private fun discoverServices() {
@@ -98,12 +125,17 @@ class RemoteControlViewModel : ViewModel() {
         val url = "ws://$host:$port"
         Log.d(TAG, "Attempting WebSocket connection to: $url")
         
+        _connectionState.value = ConnectionState.CONNECTING
+        
         val request = Request.Builder()
             .url(url)
             .build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connection opened successfully!")
+                _connectionState.value = ConnectionState.CONNECTED
+                reconnectAttempts = 0 // Reset reconnect attempts on successful connection
+                isReconnecting = false
             }
             
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -113,18 +145,40 @@ class RemoteControlViewModel : ViewModel() {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket connection failed: ${t.message}")
                 Log.e(TAG, "Response: ${response?.message}")
+                _connectionState.value = ConnectionState.DISCONNECTED
+                
+                // Start reconnection if not already reconnecting
+                if (!isReconnecting) {
+                    startReconnection()
+                }
             }
             
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket connection closed: $code - $reason")
+                _connectionState.value = ConnectionState.DISCONNECTED
+                
+                // Start reconnection if not already reconnecting
+                if (!isReconnecting) {
+                    startReconnection()
+                }
             }
         })
     }
 
     private fun connectToDomainName() {
-        Log.d(TAG, "Attempting direct connection to server IP...")
-        // Use the direct IP address since domain resolution isn't working
-        connectWebSocket("192.168.0.8", 8765)
+        Log.d(TAG, "Attempting connection to domain name...")
+        _connectionState.value = ConnectionState.CONNECTING
+        // Try the domain name first
+        connectWebSocket("remote-control.local", 8765)
+        
+        // If domain fails, fall back to IP after a delay
+        viewModelScope.launch {
+            delay(2000) // Wait 2 seconds for domain connection
+            if (_connectionState.value != ConnectionState.CONNECTED) {
+                Log.d(TAG, "Domain connection failed, trying IP fallback...")
+                connectWebSocket("192.168.0.8", 8765)
+            }
+        }
     }
 
     fun sendMouseMove(x: Int, y: Int, relative: Boolean) {
@@ -179,5 +233,70 @@ class RemoteControlViewModel : ViewModel() {
         Log.d(TAG, "ViewModel being cleared, closing connections")
         webSocket?.close(1000, null)
         nsdManager?.stopServiceDiscovery(discoveryListener)
+    }
+
+    private fun startReconnection() {
+        if (isReconnecting || reconnectAttempts >= maxReconnectAttempts) {
+            Log.d(TAG, "Reconnection stopped: attempts=$reconnectAttempts, max=$maxReconnectAttempts")
+            return
+        }
+        
+        isReconnecting = true
+        reconnectAttempts++
+        
+        viewModelScope.launch {
+            _connectionState.value = ConnectionState.RECONNECTING
+            
+            // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+            val delayMs = reconnectDelayMs * (1 shl (reconnectAttempts - 1))
+            Log.d(TAG, "Attempting reconnection #$reconnectAttempts in ${delayMs}ms")
+            
+            delay(delayMs)
+            
+            // Try different connection strategies
+            when (reconnectAttempts) {
+                1, 2 -> {
+                    // First attempts: try discovered server or domain
+                    if (discoveredServer != null) {
+                        val host = discoveredServer!!.host.hostAddress
+                        val port = discoveredServer!!.port
+                        Log.d(TAG, "Reconnecting to discovered server: $host:$port")
+                        connectWebSocket(host, port)
+                    } else {
+                        Log.d(TAG, "Reconnecting to domain name")
+                        connectWebSocket("remote-control.local", 8765)
+                    }
+                }
+                3, 4 -> {
+                    // Later attempts: try IP fallback
+                    Log.d(TAG, "Reconnecting to IP fallback")
+                    connectWebSocket("192.168.0.8", 8765)
+                }
+                5 -> {
+                    // Last attempt: restart discovery
+                    Log.d(TAG, "Last reconnection attempt: restarting discovery")
+                    discoverServices()
+                }
+            }
+            
+            // Check if reconnection was successful after a delay
+            delay(5000)
+            if (_connectionState.value != ConnectionState.CONNECTED) {
+                isReconnecting = false
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    startReconnection() // Try again
+                } else {
+                    Log.d(TAG, "Max reconnection attempts reached")
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                }
+            }
+        }
+    }
+    
+    fun manualReconnect() {
+        Log.d(TAG, "Manual reconnection requested")
+        reconnectAttempts = 0
+        isReconnecting = false
+        startReconnection()
     }
 } 
