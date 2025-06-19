@@ -222,12 +222,14 @@ client/
 
 #### **MouseScreen**
 - **Touchpad**: Drag gesture handling for mouse movement
-- **Mouse Buttons**: Left and right click buttons
+- **Tap-to-Click**: Tap gesture handling for left click
+- **Right Click Button**: Full-width button for right click
 - **Connection Status**: Visual connection indicator
 
 #### **KeyboardScreen**
 - **Text Input**: Multi-line text field
-- **Special Keys**: Backspace and quick action buttons
+- **Backspace Button**: Prominent backspace button for easy deletion
+- **Quick Actions**: Enter, Tab, and Escape buttons
 - **Send Functionality**: Text sending to server
 
 ### **Connection States**
