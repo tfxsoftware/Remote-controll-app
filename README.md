@@ -6,7 +6,8 @@ A modern Android app that transforms your phone into a powerful remote control f
 
 ### **Remote Control Capabilities**
 - **Touchpad Control**: Drag to move mouse with precision
-- **Mouse Buttons**: Left and right click with visual feedback
+- **Tap-to-Click**: Tap anywhere on touchpad for left click
+- **Mouse Buttons**: Right click button for context menus
 - **Keyboard Input**: Full text typing with special key support
 - **Special Keys**: Backspace, Enter, Tab, Escape, Function keys
 - **Real-time Response**: Immediate command execution
@@ -32,8 +33,10 @@ A modern Android app that transforms your phone into a powerful remote control f
 
 ### **Mouse Control Screen**
 - **Touchpad Area**: Large, responsive touchpad with gradient background
+- **Tap-to-Click**: Tap anywhere on touchpad for left click
+- **Drag Movement**: Drag to move mouse cursor with precision
+- **Right Click Button**: Full-width button for context menus
 - **Connection Status**: Real-time status indicator with reconnect button
-- **Mouse Buttons**: Elevated buttons for left and right click
 - **Visual Feedback**: Icons and colors for clear interaction
 
 ### **Keyboard Screen**
