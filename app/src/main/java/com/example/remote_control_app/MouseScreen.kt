@@ -53,11 +53,22 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
                         )
                     )
                     .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            val (dx, dy) = dragAmount
-                            viewModel.sendMouseMove(dx.toInt(), dy.toInt(), relative = true)
-                            change.consume()
-                        }
+                        detectDragGestures(
+                            onDragStart = { },
+                            onDragEnd = { },
+                            onDragCancel = { },
+                            onDrag = { change, dragAmount ->
+                                // Only process the drag if the pointer is still in bounds
+                                if (change.position.x >= 0f && 
+                                    change.position.y >= 0f && 
+                                    change.position.x <= size.width && 
+                                    change.position.y <= size.height) {
+                                    val (dx, dy) = dragAmount
+                                    viewModel.sendMouseMove(dx.toInt(), dy.toInt(), relative = true)
+                                }
+                                change.consume()
+                            }
+                        )
                     }
                     .pointerInput(Unit) {
                         detectTapGestures(
