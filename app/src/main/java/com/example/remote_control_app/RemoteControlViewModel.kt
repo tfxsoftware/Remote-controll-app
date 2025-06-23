@@ -1,17 +1,25 @@
 package com.example.remote_control_app
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import androidx.compose.runtime.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 enum class ConnectionState {
     DISCONNECTED,
@@ -22,9 +30,18 @@ enum class ConnectionState {
 
 class RemoteControlViewModel : ViewModel() {
     private var webSocket: WebSocket? = null
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
     private var nsdManager: NsdManager? = null
     private var discoveredServer: NsdServiceInfo? = null
+    private lateinit var connectionPreferences: ConnectionPreferences
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var currentConnectionId = 0 // To track connection attempts
     
     // Connection state management
     private val _connectionState = mutableStateOf(ConnectionState.DISCONNECTED)
@@ -36,37 +53,363 @@ class RemoteControlViewModel : ViewModel() {
     private val maxReconnectAttempts = 5
     private var reconnectAttempts = 0
     private val reconnectDelayMs = 2000L // Start with 2 seconds
+    private var currentConnectionStrategy = ConnectionStrategy.MDNS
+    private val connectionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     private val SERVICE_TYPE = "_remote-control._tcp."
     private val SERVICE_NAME = "remote-control"
+    private val DEFAULT_PORTS = listOf(8765, 8766, 8767) // Alternative ports to try
     
     companion object {
         private const val TAG = "RemoteControlViewModel"
     }
 
+    private enum class ConnectionStrategy {
+        MDNS,
+        CACHED_IP,
+        DOMAIN_NAME,
+        FALLBACK_IP
+    }
+
     fun initializeDiscovery(context: Context) {
-        Log.d(TAG, "Initializing mDNS discovery...")
+        Log.d(TAG, "Initializing connection...")
+        connectionPreferences = ConnectionPreferences(context)
+        setupNetworkMonitoring(context)
         _connectionState.value = ConnectionState.CONNECTING
-        nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-        discoverServices()
         
-        // Try domain name connection as fallback after a delay
-        viewModelScope.launch {
-            delay(3000) // Wait 3 seconds for mDNS discovery
-            if (_connectionState.value != ConnectionState.CONNECTED) {
-                Log.d(TAG, "mDNS discovery failed, trying domain name...")
-                connectToDomainName()
+        // Start with cached IP if available
+        val cachedConnection = connectionPreferences.getLastSuccessfulConnection()
+        if (cachedConnection != null) {
+            Log.d(TAG, "Found cached connection, trying it first")
+            currentConnectionStrategy = ConnectionStrategy.CACHED_IP
+            tryConnect(cachedConnection.ip, cachedConnection.port)
+            
+            // If cached connection fails, try mDNS after a delay
+            connectionScope.launch {
+                delay(2000)
+                if (_connectionState.value != ConnectionState.CONNECTED) {
+                    startMDNSDiscovery(context)
+                }
+            }
+        } else {
+            startMDNSDiscovery(context)
+        }
+    }
+
+    private fun setupNetworkMonitoring(context: Context) {
+        connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network became available")
+                // Only attempt reconnection if we're not already connected
+                if (_connectionState.value != ConnectionState.CONNECTED) {
+                    connectionScope.launch {
+                        delay(1000) // Wait for network to stabilize
+                        handleNetworkChange()
+                    }
+                }
+            }
+            
+            override fun onLost(network: Network) {
+                Log.d(TAG, "Network connection lost")
+                _connectionState.value = ConnectionState.DISCONNECTED
+                cleanupConnections()
+            }
+            
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                Log.d(TAG, "Network capabilities changed. WiFi: $hasWifi")
+                if (hasWifi && _connectionState.value != ConnectionState.CONNECTED) {
+                    connectionScope.launch {
+                        delay(1000) // Wait for network to stabilize
+                        handleNetworkChange()
+                    }
+                }
+            }
+        }
+        
+        // Register network callback
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+    }
+
+    private fun handleNetworkChange() {
+        Log.d(TAG, "Handling network change")
+        cleanupConnections()
+        reconnectAttempts = 0
+        isReconnecting = false
+        
+        // Start fresh connection attempt
+        when (currentConnectionStrategy) {
+            ConnectionStrategy.CACHED_IP -> {
+                connectionPreferences.getLastSuccessfulConnection()?.let {
+                    tryConnect(it.ip, it.port)
+                } ?: startMDNSDiscovery(null)
+            }
+            else -> startMDNSDiscovery(null)
+        }
+    }
+
+    private fun cleanupConnections() {
+        Log.d(TAG, "Cleaning up connections")
+        currentConnectionId++ // Invalidate current connection attempts
+        webSocket?.cancel() // Close any existing WebSocket
+        webSocket = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        
+        try {
+            nsdManager?.stopServiceDiscovery(discoveryListener)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping service discovery: ${e.message}")
+        }
+    }
+
+    private fun tryConnect(host: String, preferredPort: Int) {
+        val connectionId = ++currentConnectionId // Get new connection ID
+        
+        connectionScope.launch {
+            // Try each port in sequence
+            for (portOffset in 0..2) {
+                if (connectionId != currentConnectionId) {
+                    Log.d(TAG, "Connection attempt superseded by newer attempt")
+                    return@launch
+                }
+                
+                val port = preferredPort + portOffset
+                if (tryConnectToPort(host, port, connectionId)) {
+                    break
+                }
+                delay(500) // Wait before trying next port
             }
         }
     }
 
-    private fun discoverServices() {
-        Log.d(TAG, "Starting service discovery for type: $SERVICE_TYPE")
+    private suspend fun tryConnectToPort(host: String, port: Int, connectionId: Int): Boolean {
+        if (connectionId != currentConnectionId) return false
+        
+        Log.d(TAG, "Attempting connection to $host:$port")
+        val url = "ws://$host:$port"
+        
+        return suspendCancellableCoroutine { continuation ->
+            val request = Request.Builder()
+                .url(url)
+                .build()
+            
+            webSocket?.cancel() // Cancel any existing connection
+            
+            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (connectionId != currentConnectionId) {
+                        webSocket.cancel()
+                        continuation.resume(false)
+                        return
+                    }
+                    
+                    Log.d(TAG, "WebSocket connection opened successfully!")
+                    _connectionState.value = ConnectionState.CONNECTED
+                    reconnectAttempts = 0
+                    isReconnecting = false
+                    
+                    // Save successful connection if it's not the fallback IP
+                    if (currentConnectionStrategy != ConnectionStrategy.FALLBACK_IP) {
+                        connectionPreferences.saveSuccessfulConnection(host, port)
+                    }
+                    
+                    continuation.resume(true)
+                }
+                
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Log.e(TAG, "WebSocket connection failed: ${t.message}")
+                    if (connectionId != currentConnectionId) {
+                        continuation.resume(false)
+                        return
+                    }
+                    
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    
+                    if (currentConnectionStrategy == ConnectionStrategy.CACHED_IP) {
+                        connectionPreferences.clearConnectionCache()
+                    }
+                    
+                    continuation.resume(false)
+                }
+            })
+        }
+    }
+
+    private fun startMDNSDiscovery(context: Context?) {
+        Log.d(TAG, "Starting mDNS discovery...")
+        currentConnectionStrategy = ConnectionStrategy.MDNS
+        nsdManager = context?.getSystemService(Context.NSD_SERVICE) as NsdManager
+        
         try {
             nsdManager?.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            
+            // Try domain name connection as fallback after a delay
+            connectionScope.launch {
+                delay(3000) // Wait 3 seconds for mDNS discovery
+                if (_connectionState.value != ConnectionState.CONNECTED) {
+                    Log.d(TAG, "mDNS discovery failed, trying domain name...")
+                    tryDomainNameConnection()
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error starting service discovery: ${e.message}")
+            tryDomainNameConnection()
         }
+    }
+
+    private fun tryDomainNameConnection() {
+        if (_connectionState.value == ConnectionState.CONNECTED) return
+        
+        Log.d(TAG, "Attempting connection to domain name...")
+        currentConnectionStrategy = ConnectionStrategy.DOMAIN_NAME
+        _connectionState.value = ConnectionState.CONNECTING
+        connectWebSocket("remote-control.local", 8765)
+        
+        // If domain fails, fall back to IP after a delay
+        connectionScope.launch {
+            delay(2000)
+            if (_connectionState.value != ConnectionState.CONNECTED) {
+                Log.d(TAG, "Domain connection failed, trying IP fallback...")
+                currentConnectionStrategy = ConnectionStrategy.FALLBACK_IP
+                connectWebSocket("192.168.0.8", 8765)
+            }
+        }
+    }
+
+    private fun connectWebSocket(host: String, port: Int) {
+        val url = "ws://$host:$port"
+        Log.d(TAG, "Attempting WebSocket connection to: $url")
+        
+        _connectionState.value = ConnectionState.CONNECTING
+        
+        val request = Request.Builder()
+            .url(url)
+            .build()
+        
+        webSocket?.cancel() // Cancel any existing connection
+        
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d(TAG, "WebSocket connection opened successfully!")
+                _connectionState.value = ConnectionState.CONNECTED
+                reconnectAttempts = 0
+                isReconnecting = false
+                
+                // Save successful connection if it's not the fallback IP
+                if (currentConnectionStrategy != ConnectionStrategy.FALLBACK_IP) {
+                    connectionPreferences.saveSuccessfulConnection(host, port)
+                }
+                
+                // Stop mDNS discovery if it's running
+                if (currentConnectionStrategy != ConnectionStrategy.MDNS) {
+                    nsdManager?.stopServiceDiscovery(discoveryListener)
+                }
+            }
+            
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                Log.d(TAG, "Received message: $text")
+            }
+            
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e(TAG, "WebSocket connection failed: ${t.message}")
+                Log.e(TAG, "Response: ${response?.message}")
+                _connectionState.value = ConnectionState.DISCONNECTED
+                
+                // Clear cache if the cached connection failed
+                if (currentConnectionStrategy == ConnectionStrategy.CACHED_IP) {
+                    connectionPreferences.clearConnectionCache()
+                }
+                
+                // Start reconnection if not already reconnecting
+                if (!isReconnecting) {
+                    startReconnection()
+                }
+            }
+            
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "WebSocket connection closed: $code - $reason")
+                _connectionState.value = ConnectionState.DISCONNECTED
+                
+                if (!isReconnecting) {
+                    startReconnection()
+                }
+            }
+        })
+    }
+
+    private fun startReconnection() {
+        if (isReconnecting || reconnectAttempts >= maxReconnectAttempts) return
+        
+        isReconnecting = true
+        _connectionState.value = ConnectionState.RECONNECTING
+        
+        reconnectJob?.cancel()
+        reconnectJob = connectionScope.launch {
+            while (isReconnecting && reconnectAttempts < maxReconnectAttempts) {
+                delay(reconnectDelayMs * (reconnectAttempts + 1))
+                reconnectAttempts++
+                
+                when (currentConnectionStrategy) {
+                    ConnectionStrategy.CACHED_IP -> {
+                        val cached = connectionPreferences.getLastSuccessfulConnection()
+                        if (cached != null) {
+                            connectWebSocket(cached.ip, cached.port)
+                        } else {
+                            currentConnectionStrategy = ConnectionStrategy.MDNS
+                        }
+                    }
+                    ConnectionStrategy.MDNS -> {
+                        // Try to restart mDNS discovery
+                        nsdManager?.let { manager ->
+                            try {
+                                manager.stopServiceDiscovery(discoveryListener)
+                                delay(1000)
+                                manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error restarting mDNS discovery: ${e.message}")
+                                currentConnectionStrategy = ConnectionStrategy.DOMAIN_NAME
+                            }
+                        }
+                    }
+                    ConnectionStrategy.DOMAIN_NAME -> {
+                        connectWebSocket("remote-control.local", 8765)
+                    }
+                    ConnectionStrategy.FALLBACK_IP -> {
+                        connectWebSocket("192.168.0.8", 8765)
+                    }
+                }
+                
+                // If still not connected, try next strategy
+                if (_connectionState.value != ConnectionState.CONNECTED) {
+                    currentConnectionStrategy = when (currentConnectionStrategy) {
+                        ConnectionStrategy.CACHED_IP -> ConnectionStrategy.MDNS
+                        ConnectionStrategy.MDNS -> ConnectionStrategy.DOMAIN_NAME
+                        ConnectionStrategy.DOMAIN_NAME -> ConnectionStrategy.FALLBACK_IP
+                        ConnectionStrategy.FALLBACK_IP -> ConnectionStrategy.MDNS
+                    }
+                }
+            }
+            
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                isReconnecting = false
+                _connectionState.value = ConnectionState.DISCONNECTED
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cleanupConnections()
+        networkCallback?.let { callback ->
+            connectivityManager?.unregisterNetworkCallback(callback)
+        }
+        connectionScope.cancel()
     }
 
     private val discoveryListener = object : NsdManager.DiscoveryListener {
@@ -117,66 +460,6 @@ class RemoteControlViewModel : ViewModel() {
                 val port = it.port
                 Log.d(TAG, "Connecting to server at $host:$port")
                 connectWebSocket(host, port)
-            }
-        }
-    }
-
-    private fun connectWebSocket(host: String, port: Int) {
-        val url = "ws://$host:$port"
-        Log.d(TAG, "Attempting WebSocket connection to: $url")
-        
-        _connectionState.value = ConnectionState.CONNECTING
-        
-        val request = Request.Builder()
-            .url(url)
-            .build()
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket connection opened successfully!")
-                _connectionState.value = ConnectionState.CONNECTED
-                reconnectAttempts = 0 // Reset reconnect attempts on successful connection
-                isReconnecting = false
-            }
-            
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "Received message: $text")
-            }
-            
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket connection failed: ${t.message}")
-                Log.e(TAG, "Response: ${response?.message}")
-                _connectionState.value = ConnectionState.DISCONNECTED
-                
-                // Start reconnection if not already reconnecting
-                if (!isReconnecting) {
-                    startReconnection()
-                }
-            }
-            
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket connection closed: $code - $reason")
-                _connectionState.value = ConnectionState.DISCONNECTED
-                
-                // Start reconnection if not already reconnecting
-                if (!isReconnecting) {
-                    startReconnection()
-                }
-            }
-        })
-    }
-
-    private fun connectToDomainName() {
-        Log.d(TAG, "Attempting connection to domain name...")
-        _connectionState.value = ConnectionState.CONNECTING
-        // Try the domain name first
-        connectWebSocket("remote-control.local", 8765)
-        
-        // If domain fails, fall back to IP after a delay
-        viewModelScope.launch {
-            delay(2000) // Wait 2 seconds for domain connection
-            if (_connectionState.value != ConnectionState.CONNECTED) {
-                Log.d(TAG, "Domain connection failed, trying IP fallback...")
-                connectWebSocket("192.168.0.8", 8765)
             }
         }
     }
@@ -303,82 +586,10 @@ class RemoteControlViewModel : ViewModel() {
     }
 
     private fun send(json: JSONObject) {
-        viewModelScope.launch(Dispatchers.IO) {
+        connectionScope.launch {
             val message = json.toString()
             Log.d(TAG, "Sending message: $message")
             webSocket?.send(message)
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        Log.d(TAG, "ViewModel being cleared, closing connections")
-        webSocket?.close(1000, null)
-        nsdManager?.stopServiceDiscovery(discoveryListener)
-    }
-
-    private fun startReconnection() {
-        if (isReconnecting || reconnectAttempts >= maxReconnectAttempts) {
-            Log.d(TAG, "Reconnection stopped: attempts=$reconnectAttempts, max=$maxReconnectAttempts")
-            return
-        }
-        
-        isReconnecting = true
-        reconnectAttempts++
-        
-        viewModelScope.launch {
-            _connectionState.value = ConnectionState.RECONNECTING
-            
-            // Exponential backoff: 2s, 4s, 8s, 16s, 32s
-            val delayMs = reconnectDelayMs * (1 shl (reconnectAttempts - 1))
-            Log.d(TAG, "Attempting reconnection #$reconnectAttempts in ${delayMs}ms")
-            
-            delay(delayMs)
-            
-            // Try different connection strategies
-            when (reconnectAttempts) {
-                1, 2 -> {
-                    // First attempts: try discovered server or domain
-                    if (discoveredServer != null) {
-                        val host = discoveredServer!!.host.hostAddress
-                        val port = discoveredServer!!.port
-                        Log.d(TAG, "Reconnecting to discovered server: $host:$port")
-                        connectWebSocket(host, port)
-                    } else {
-                        Log.d(TAG, "Reconnecting to domain name")
-                        connectWebSocket("remote-control.local", 8765)
-                    }
-                }
-                3, 4 -> {
-                    // Later attempts: try IP fallback
-                    Log.d(TAG, "Reconnecting to IP fallback")
-                    connectWebSocket("192.168.0.8", 8765)
-                }
-                5 -> {
-                    // Last attempt: restart discovery
-                    Log.d(TAG, "Last reconnection attempt: restarting discovery")
-                    discoverServices()
-                }
-            }
-            
-            // Check if reconnection was successful after a delay
-            delay(5000)
-            if (_connectionState.value != ConnectionState.CONNECTED) {
-                isReconnecting = false
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    startReconnection() // Try again
-                } else {
-                    Log.d(TAG, "Max reconnection attempts reached")
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                }
-            }
-        }
-    }
-    
-    fun manualReconnect() {
-        Log.d(TAG, "Manual reconnection requested")
-        reconnectAttempts = 0
-        isReconnecting = false
-        startReconnection()
     }
 } 
