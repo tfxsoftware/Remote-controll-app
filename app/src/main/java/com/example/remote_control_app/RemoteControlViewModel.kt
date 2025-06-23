@@ -201,6 +201,14 @@ class RemoteControlViewModel : ViewModel() {
         send(json)
     }
 
+    fun sendMouseScroll(amount: Int) {
+        val json = JSONObject()
+        json.put("type", "mouse_scroll")
+        json.put("amount", amount)
+        Log.d(TAG, "Sending mouse scroll: $json")
+        send(json)
+    }
+
     fun sendKeyType(text: String, interval: Double = 0.01) {
         val json = JSONObject()
         json.put("type", "key_type")

@@ -97,6 +97,53 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         
         Spacer(modifier = Modifier.height(12.dp))
         
+        // Scroll wheel area
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Scroll up button
+            ElevatedButton(
+                onClick = { viewModel.sendMouseScroll(-120) },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                colors = ButtonDefaults.elevatedButtonColors(
+                    containerColor = Color(0xFF2196F3)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    "Scroll Up",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            
+            // Scroll down button
+            ElevatedButton(
+                onClick = { viewModel.sendMouseScroll(120) },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                colors = ButtonDefaults.elevatedButtonColors(
+                    containerColor = Color(0xFF2196F3)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    "Scroll Down",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
         // Right click button (directly under touchpad)
         ElevatedButton(
             onClick = { viewModel.sendMouseClick("right") },
