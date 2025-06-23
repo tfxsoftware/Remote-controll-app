@@ -3,6 +3,7 @@ package com.example.remote_control_app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,74 +34,119 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        // Touchpad area
-        Card(
+        // Touchpad and scroll area container
+        Row(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            shape = RoundedCornerShape(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Box(
+            // Touchpad area
+            Card(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xFFE3F2FD),
-                                Color(0xFFBBDEFB)
+                    .weight(0.85f)
+                    .fillMaxHeight(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0xFFE3F2FD),
+                                    Color(0xFFBBDEFB)
+                                )
                             )
                         )
-                    )
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { },
-                            onDragEnd = { },
-                            onDragCancel = { },
-                            onDrag = { change, dragAmount ->
-                                // Only process the drag if the pointer is still in bounds
-                                if (change.position.x >= 0f && 
-                                    change.position.y >= 0f && 
-                                    change.position.x <= size.width && 
-                                    change.position.y <= size.height) {
-                                    val (dx, dy) = dragAmount
-                                    viewModel.sendMouseMove(dx.toInt(), dy.toInt(), relative = true)
+                        .pointerInput(Unit) {
+                            detectDragGestures(
+                                onDragStart = { },
+                                onDragEnd = { },
+                                onDragCancel = { },
+                                onDrag = { change, dragAmount ->
+                                    // Only process the drag if the pointer is still in bounds
+                                    if (change.position.x >= 0f && 
+                                        change.position.y >= 0f && 
+                                        change.position.x <= size.width && 
+                                        change.position.y <= size.height) {
+                                        val (dx, dy) = dragAmount
+                                        viewModel.sendMouseMove(dx.toInt(), dy.toInt(), relative = true)
+                                    }
+                                    change.consume()
                                 }
-                                change.consume()
-                            }
+                            )
+                        }
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onTap = {
+                                    // Send left click on tap
+                                    viewModel.sendMouseClick("left")
+                                }
+                            )
+                        }
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Touchpad",
+                            modifier = Modifier.size(48.dp),
+                            tint = Color(0xFF1976D2)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Touchpad Area",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF1976D2)
+                        )
+                        Text(
+                            text = "Drag to move mouse • Tap to click",
+                            fontSize = 14.sp,
+                            color = Color(0xFF757575)
                         )
                     }
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = {
-                                // Send left click on tap
-                                viewModel.sendMouseClick("left")
-                            }
-                        )
-                    },
-                contentAlignment = Alignment.Center
+                }
+            }
+            
+            // Scroll area
+            Card(
+                modifier = Modifier
+                    .weight(0.15f)
+                    .fillMaxHeight(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                shape = RoundedCornerShape(16.dp)
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0xFFE8EAF6),
+                                    Color(0xFFC5CAE9)
+                                )
+                            )
+                        )
+                        .pointerInput(Unit) {
+                            detectVerticalDragGestures { change, dragAmount ->
+                                // Convert drag amount to scroll amount
+                                // Negative dragAmount means dragging up, which should scroll down
+                                val scrollAmount = -dragAmount.toInt() / 2
+                                viewModel.sendMouseScroll(scrollAmount)
+                            }
+                        }
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Touchpad",
-                        modifier = Modifier.size(48.dp),
-                        tint = Color(0xFF1976D2)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Touchpad Area",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF1976D2)
-                    )
-                    Text(
-                        text = "Drag to move mouse • Tap to click",
-                        fontSize = 14.sp,
-                        color = Color(0xFF757575)
+                        text = "⇅",
+                        fontSize = 24.sp,
+                        color = Color(0xFF3F51B5),
+                        modifier = Modifier.align(Alignment.Center)
                     )
                 }
             }
@@ -108,54 +154,7 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         
         Spacer(modifier = Modifier.height(12.dp))
         
-        // Scroll wheel area
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(60.dp)
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Scroll up button
-            ElevatedButton(
-                onClick = { viewModel.sendMouseScroll(-20) },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                colors = ButtonDefaults.elevatedButtonColors(
-                    containerColor = Color(0xFF2196F3)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    "Scroll Up",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            
-            // Scroll down button
-            ElevatedButton(
-                onClick = { viewModel.sendMouseScroll(20) },
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                colors = ButtonDefaults.elevatedButtonColors(
-                    containerColor = Color(0xFF2196F3)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    "Scroll Down",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-        }
-        
-        Spacer(modifier = Modifier.height(12.dp))
-        
-        // Right click button (directly under touchpad)
+        // Right click button
         ElevatedButton(
             onClick = { viewModel.sendMouseClick("right") },
             modifier = Modifier.fillMaxWidth(),
