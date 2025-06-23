@@ -1,5 +1,6 @@
 package com.example.remote_control_app
 
+import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -9,15 +10,21 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import androidx.compose.runtime.*
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.suspendCancellableCoroutine
-import okhttp3.*
+import kotlinx.coroutines.cancel
+import kotlin.coroutines.resume
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -28,7 +35,7 @@ enum class ConnectionState {
     RECONNECTING
 }
 
-class RemoteControlViewModel : ViewModel() {
+class RemoteControlViewModel(application: Application) : AndroidViewModel(application) {
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -48,13 +55,13 @@ class RemoteControlViewModel : ViewModel() {
     val connectionState: State<ConnectionState> = _connectionState
     
     // Connection healing
-    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private var reconnectJob: Job? = null
     private var isReconnecting = false
     private val maxReconnectAttempts = 5
     private var reconnectAttempts = 0
     private val reconnectDelayMs = 2000L // Start with 2 seconds
     private var currentConnectionStrategy = ConnectionStrategy.MDNS
-    private val connectionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val connectionScope = CoroutineScope(Job() + Dispatchers.IO)
     
     private val SERVICE_TYPE = "_remote-control._tcp."
     private val SERVICE_NAME = "remote-control"
@@ -147,16 +154,16 @@ class RemoteControlViewModel : ViewModel() {
             ConnectionStrategy.CACHED_IP -> {
                 connectionPreferences.getLastSuccessfulConnection()?.let {
                     tryConnect(it.ip, it.port)
-                } ?: startMDNSDiscovery(null)
+                } ?: startMDNSDiscovery()
             }
-            else -> startMDNSDiscovery(null)
+            else -> startMDNSDiscovery()
         }
     }
 
     private fun cleanupConnections() {
         Log.d(TAG, "Cleaning up connections")
         currentConnectionId++ // Invalidate current connection attempts
-        webSocket?.cancel() // Close any existing WebSocket
+        webSocket?.close(1000, null) // Close any existing WebSocket with normal closure code
         webSocket = null
         reconnectJob?.cancel()
         reconnectJob = null
@@ -199,12 +206,12 @@ class RemoteControlViewModel : ViewModel() {
                 .url(url)
                 .build()
             
-            webSocket?.cancel() // Cancel any existing connection
+            webSocket?.close(1000, null) // Close any existing connection
             
             webSocket = client.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     if (connectionId != currentConnectionId) {
-                        webSocket.cancel()
+                        webSocket.close(1000, "Superseded by newer connection")
                         continuation.resume(false)
                         return
                     }
@@ -238,13 +245,28 @@ class RemoteControlViewModel : ViewModel() {
                     continuation.resume(false)
                 }
             })
+
+            continuation.invokeOnCancellation {
+                Log.d(TAG, "Connection attempt cancelled")
+                webSocket?.close(1000, "Cancelled")
+            }
         }
     }
 
-    private fun startMDNSDiscovery(context: Context?) {
+    private fun startMDNSDiscovery(context: Context? = null) {
         Log.d(TAG, "Starting mDNS discovery...")
         currentConnectionStrategy = ConnectionStrategy.MDNS
-        nsdManager = context?.getSystemService(Context.NSD_SERVICE) as NsdManager
+        
+        val ctx = context ?: getApplication<Application>()
+        if (nsdManager == null) {
+            nsdManager = ctx.getSystemService(Context.NSD_SERVICE) as? NsdManager
+        }
+        
+        if (nsdManager == null) {
+            Log.e(TAG, "Failed to get NsdManager, falling back to domain name")
+            tryDomainNameConnection()
+            return
+        }
         
         try {
             nsdManager?.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
@@ -292,7 +314,7 @@ class RemoteControlViewModel : ViewModel() {
             .url(url)
             .build()
         
-        webSocket?.cancel() // Cancel any existing connection
+        webSocket?.close(1000, null) // Cancel any existing connection
         
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -583,6 +605,23 @@ class RemoteControlViewModel : ViewModel() {
     fun sendHotkey(vararg keys: String) {
         val keyString = keys.joinToString("+")
         sendKeyPress(keyString)
+    }
+
+    fun manualReconnect() {
+        Log.d(TAG, "Manual reconnection requested")
+        cleanupConnections()
+        reconnectAttempts = 0
+        isReconnecting = false
+        
+        // Start fresh connection attempt
+        when (currentConnectionStrategy) {
+            ConnectionStrategy.CACHED_IP -> {
+                connectionPreferences.getLastSuccessfulConnection()?.let {
+                    tryConnect(it.ip, it.port)
+                } ?: startMDNSDiscovery(null)
+            }
+            else -> startMDNSDiscovery(null)
+        }
     }
 
     private fun send(json: JSONObject) {
