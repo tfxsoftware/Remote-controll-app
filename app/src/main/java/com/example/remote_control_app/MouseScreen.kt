@@ -118,7 +118,7 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
         ) {
             // Scroll up button
             ElevatedButton(
-                onClick = { viewModel.sendMouseScroll(-120) },
+                onClick = { viewModel.sendMouseScroll(-20) },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -136,7 +136,7 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
             
             // Scroll down button
             ElevatedButton(
-                onClick = { viewModel.sendMouseScroll(120) },
+                onClick = { viewModel.sendMouseScroll(20) },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
