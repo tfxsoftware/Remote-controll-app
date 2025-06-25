@@ -67,6 +67,12 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     private val SERVICE_NAME = "remote-control"
     private val DEFAULT_PORTS = listOf(8765, 8766, 8767) // Alternative ports to try
     
+    private var lastMouseMoveTime = 0L
+    private val minMovementInterval = 16L // ~60fps
+    private var accumulatedX = 0
+    private var accumulatedY = 0
+    private var mouseMovementJob: Job? = null
+    
     companion object {
         private const val TAG = "RemoteControlViewModel"
     }
@@ -202,6 +208,11 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         val url = "ws://$host:$port"
         
         return suspendCancellableCoroutine { continuation ->
+            if (connectionId != currentConnectionId) {
+                continuation.resume(false)
+                return@suspendCancellableCoroutine
+            }
+            
             val request = Request.Builder()
                 .url(url)
                 .build()
@@ -209,10 +220,19 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
             webSocket?.close(1000, null) // Close any existing connection
             
             webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                private var hasCompleted = false
+                
+                private fun complete(result: Boolean) {
+                    if (!hasCompleted) {
+                        hasCompleted = true
+                        continuation.resume(result)
+                    }
+                }
+                
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     if (connectionId != currentConnectionId) {
                         webSocket.close(1000, "Superseded by newer connection")
-                        continuation.resume(false)
+                        complete(false)
                         return
                     }
                     
@@ -226,13 +246,13 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                         connectionPreferences.saveSuccessfulConnection(host, port)
                     }
                     
-                    continuation.resume(true)
+                    complete(true)
                 }
                 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     Log.e(TAG, "WebSocket connection failed: ${t.message}")
                     if (connectionId != currentConnectionId) {
-                        continuation.resume(false)
+                        complete(false)
                         return
                     }
                     
@@ -242,7 +262,7 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                         connectionPreferences.clearConnectionCache()
                     }
                     
-                    continuation.resume(false)
+                    complete(false)
                 }
             })
 
@@ -487,13 +507,40 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun sendMouseMove(x: Int, y: Int, relative: Boolean) {
+        val currentTime = System.currentTimeMillis()
+        
+        // Accumulate movements
+        accumulatedX += x
+        accumulatedY += y
+        
+        // Cancel any pending movement
+        mouseMovementJob?.cancel()
+        
+        // If we haven't sent a movement recently, send immediately
+        if (currentTime - lastMouseMoveTime >= minMovementInterval) {
+            sendAccumulatedMovement(relative)
+        } else {
+            // Otherwise schedule to send after the interval
+            mouseMovementJob = connectionScope.launch {
+                delay(minMovementInterval - (currentTime - lastMouseMoveTime))
+                sendAccumulatedMovement(relative)
+            }
+        }
+    }
+    
+    private fun sendAccumulatedMovement(relative: Boolean) {
+        if (accumulatedX == 0 && accumulatedY == 0) return
+        
         val json = JSONObject()
         json.put("type", "mouse_move")
-        json.put("x", x)
-        json.put("y", y)
+        json.put("x", accumulatedX)
+        json.put("y", accumulatedY)
         json.put("relative", relative)
-        Log.d(TAG, "Sending mouse move: $json")
         send(json)
+        
+        lastMouseMoveTime = System.currentTimeMillis()
+        accumulatedX = 0
+        accumulatedY = 0
     }
 
     fun sendMouseClick(button: String, clicks: Int = 1, interval: Double = 0.0) {
@@ -609,9 +656,15 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
 
     fun manualReconnect() {
         Log.d(TAG, "Manual reconnection requested")
+        if (_connectionState.value == ConnectionState.RECONNECTING) {
+            Log.d(TAG, "Already reconnecting, ignoring request")
+            return
+        }
+        
         cleanupConnections()
         reconnectAttempts = 0
         isReconnecting = false
+        _connectionState.value = ConnectionState.CONNECTING
         
         // Start fresh connection attempt
         when (currentConnectionStrategy) {
@@ -625,10 +678,16 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun send(json: JSONObject) {
-        connectionScope.launch {
-            val message = json.toString()
-            Log.d(TAG, "Sending message: $message")
-            webSocket?.send(message)
+        if (_connectionState.value != ConnectionState.CONNECTED) {
+            Log.w(TAG, "Not sending message - not connected")
+            return
+        }
+        try {
+            webSocket?.send(json.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending message: ${e.message}")
+            _connectionState.value = ConnectionState.DISCONNECTED
+            startReconnection()
         }
     }
 } 
