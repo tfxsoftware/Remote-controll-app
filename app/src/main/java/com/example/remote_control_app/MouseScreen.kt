@@ -251,13 +251,15 @@ fun ConnectionStatusIndicator(
     
     val text = when (connectionState) {
         ConnectionState.CONNECTED -> "Connected"
-        ConnectionState.CONNECTING -> "Connecting..."
-        ConnectionState.RECONNECTING -> "Reconnecting..."
-        ConnectionState.DISCONNECTED -> "Disconnected"
+        ConnectionState.CONNECTING -> "Connecting to server..."
+        ConnectionState.RECONNECTING -> "Connection lost, trying to reconnect..."
+        ConnectionState.DISCONNECTED -> "Connection lost"
     }
     
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp),
         colors = CardDefaults.cardColors(
             containerColor = backgroundColor.copy(alpha = 0.1f)
         ),
@@ -267,37 +269,21 @@ fun ConnectionStatusIndicator(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(backgroundColor)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = text,
-                    color = backgroundColor,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 16.sp
-                )
-            }
-            
-            if (connectionState == ConnectionState.DISCONNECTED) {
-                TextButton(
-                    onClick = onManualReconnect,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = backgroundColor
-                    )
-                ) {
-                    Text("Reconnect", fontWeight = FontWeight.Medium)
-                }
-            }
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(backgroundColor)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = text,
+                color = backgroundColor,
+                fontWeight = FontWeight.Medium,
+                fontSize = 16.sp
+            )
         }
     }
 } 
