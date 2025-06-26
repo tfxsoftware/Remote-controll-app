@@ -80,8 +80,12 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     private enum class ConnectionStrategy {
         MDNS,
         CACHED_IP,
-        DOMAIN_NAME,
-        FALLBACK_IP
+        DOMAIN_NAME
+    }
+
+    fun clearConnectionCache() {
+        Log.d(TAG, "Clearing connection cache due to network change")
+        connectionPreferences.clearConnectionCache()
     }
 
     fun initializeDiscovery(context: Context) {
@@ -242,7 +246,7 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     isReconnecting = false
                     
                     // Save successful connection if it's not the fallback IP
-                    if (currentConnectionStrategy != ConnectionStrategy.FALLBACK_IP) {
+                    if (currentConnectionStrategy != ConnectionStrategy.DOMAIN_NAME) {
                         connectionPreferences.saveSuccessfulConnection(host, port)
                     }
                     
@@ -312,16 +316,6 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         currentConnectionStrategy = ConnectionStrategy.DOMAIN_NAME
         _connectionState.value = ConnectionState.CONNECTING
         connectWebSocket("remote-control.local", 8765)
-        
-        // If domain fails, fall back to IP after a delay
-        connectionScope.launch {
-            delay(2000)
-            if (_connectionState.value != ConnectionState.CONNECTED) {
-                Log.d(TAG, "Domain connection failed, trying IP fallback...")
-                currentConnectionStrategy = ConnectionStrategy.FALLBACK_IP
-                connectWebSocket("192.168.0.8", 8765)
-            }
-        }
     }
 
     private fun connectWebSocket(host: String, port: Int) {
@@ -344,7 +338,7 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                 isReconnecting = false
                 
                 // Save successful connection if it's not the fallback IP
-                if (currentConnectionStrategy != ConnectionStrategy.FALLBACK_IP) {
+                if (currentConnectionStrategy != ConnectionStrategy.DOMAIN_NAME) {
                     connectionPreferences.saveSuccessfulConnection(host, port)
                 }
                 
@@ -422,9 +416,6 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     ConnectionStrategy.DOMAIN_NAME -> {
                         connectWebSocket("remote-control.local", 8765)
                     }
-                    ConnectionStrategy.FALLBACK_IP -> {
-                        connectWebSocket("192.168.0.8", 8765)
-                    }
                 }
                 
                 // If still not connected, try next strategy
@@ -432,8 +423,7 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     currentConnectionStrategy = when (currentConnectionStrategy) {
                         ConnectionStrategy.CACHED_IP -> ConnectionStrategy.MDNS
                         ConnectionStrategy.MDNS -> ConnectionStrategy.DOMAIN_NAME
-                        ConnectionStrategy.DOMAIN_NAME -> ConnectionStrategy.FALLBACK_IP
-                        ConnectionStrategy.FALLBACK_IP -> ConnectionStrategy.MDNS
+                        ConnectionStrategy.DOMAIN_NAME -> ConnectionStrategy.MDNS
                     }
                 }
             }
