@@ -57,11 +57,18 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     // Connection healing
     private var reconnectJob: Job? = null
     private var isReconnecting = false
-    private val maxReconnectAttempts = 5
+    private val maxReconnectAttempts = 20 // Increased from 5 to 20
     private var reconnectAttempts = 0
-    private val reconnectDelayMs = 2000L // Start with 2 seconds
+    private val reconnectDelayMs = 1000L // Reduced from 2000L to 1000L for faster initial retry
     private var currentConnectionStrategy = ConnectionStrategy.MDNS
     private val connectionScope = CoroutineScope(Job() + Dispatchers.IO)
+    
+    // mDNS discovery state
+    private var isDiscoveryActive = false
+    
+    // Network change debouncing
+    private var lastNetworkChangeTime = 0L
+    private val networkChangeDebounceMs = 5000L // Increased to 5 seconds between network change handling
     
     private val SERVICE_TYPE = "_remote-control._tcp."
     private val SERVICE_NAME = "remote-control"
@@ -73,11 +80,9 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     private var accumulatedY = 0
     private var mouseMovementJob: Job? = null
     
-    // Scroll handling
-    private var lastScrollTime = 0L
-    private val minScrollInterval = 50L // Minimum 50ms between scroll events
-    private var accumulatedScroll = 0
-    private var scrollJob: Job? = null
+    // Connection keep-alive
+    private var pingJob: Job? = null
+    private val pingInterval = 30000L // Send ping every 30 seconds
     
     companion object {
         private const val TAG = "RemoteControlViewModel"
@@ -87,11 +92,6 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         MDNS,
         CACHED_IP,
         DOMAIN_NAME
-    }
-
-    fun clearConnectionCache() {
-        Log.d(TAG, "Clearing connection cache due to network change")
-        connectionPreferences.clearConnectionCache()
     }
 
     fun initializeDiscovery(context: Context) {
@@ -140,16 +140,7 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                 cleanupConnections()
             }
             
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                Log.d(TAG, "Network capabilities changed. WiFi: $hasWifi")
-                if (hasWifi && _connectionState.value != ConnectionState.CONNECTED) {
-                    connectionScope.launch {
-                        delay(1000) // Wait for network to stabilize
-                        handleNetworkChange()
-                    }
-                }
-            }
+            // Remove onCapabilitiesChanged to prevent interference with active connections
         }
         
         // Register network callback
@@ -160,6 +151,13 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun handleNetworkChange() {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastNetworkChangeTime < networkChangeDebounceMs) {
+            Log.d(TAG, "Network change ignored due to debouncing")
+            return
+        }
+        lastNetworkChangeTime = currentTime
+        
         Log.d(TAG, "Handling network change")
         cleanupConnections()
         reconnectAttempts = 0
@@ -183,11 +181,19 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         webSocket = null
         reconnectJob?.cancel()
         reconnectJob = null
+        pingJob?.cancel()
+        pingJob = null
         
-        try {
-            nsdManager?.stopServiceDiscovery(discoveryListener)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping service discovery: ${e.message}")
+        // Only stop discovery if it's actually active
+        if (isDiscoveryActive) {
+            try {
+                nsdManager?.stopServiceDiscovery(discoveryListener)
+                isDiscoveryActive = false
+                Log.d(TAG, "Stopped mDNS discovery")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping service discovery: ${e.message}")
+                isDiscoveryActive = false
+            }
         }
     }
 
@@ -259,6 +265,10 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     complete(true)
                 }
                 
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    Log.d(TAG, "Received message: $text")
+                }
+                
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     Log.e(TAG, "WebSocket connection failed: ${t.message}")
                     if (connectionId != currentConnectionId) {
@@ -272,7 +282,25 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                         connectionPreferences.clearConnectionCache()
                     }
                     
+                    // Start reconnection if not already reconnecting
+                    if (!isReconnecting) {
+                        startReconnection()
+                    }
+                    
                     complete(false)
+                }
+                
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    Log.d(TAG, "WebSocket connection closed: $code - $reason")
+                    
+                    // Only trigger reconnection if it's not a normal closure or if we're not connected
+                    if (code != 1000 || _connectionState.value != ConnectionState.CONNECTED) {
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                        
+                        if (!isReconnecting) {
+                            startReconnection()
+                        }
+                    }
                 }
             })
 
@@ -293,25 +321,39 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         }
         
         if (nsdManager == null) {
-            Log.e(TAG, "Failed to get NsdManager, falling back to domain name")
-            tryDomainNameConnection()
+            Log.e(TAG, "Failed to get NsdManager, trying cached connection")
+            // Try cached connection instead of domain name
+            val cached = connectionPreferences.getLastSuccessfulConnection()
+            if (cached != null) {
+                currentConnectionStrategy = ConnectionStrategy.CACHED_IP
+                connectWebSocket(cached.ip, cached.port)
+            } else {
+                Log.e(TAG, "No cached connection available")
+            }
+            return
+        }
+        
+        // Don't start discovery if it's already active
+        if (isDiscoveryActive) {
+            Log.d(TAG, "mDNS discovery already active, skipping")
             return
         }
         
         try {
             nsdManager?.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            isDiscoveryActive = true
+            Log.d(TAG, "mDNS discovery started successfully")
             
-            // Try domain name connection as fallback after a delay
-            connectionScope.launch {
-                delay(3000) // Wait 3 seconds for mDNS discovery
-                if (_connectionState.value != ConnectionState.CONNECTED) {
-                    Log.d(TAG, "mDNS discovery failed, trying domain name...")
-                    tryDomainNameConnection()
-                }
-            }
+            // No domain name fallback - let reconnection handle failures
         } catch (e: Exception) {
             Log.e(TAG, "Error starting service discovery: ${e.message}")
-            tryDomainNameConnection()
+            isDiscoveryActive = false
+            // Try cached connection instead of domain name
+            val cached = connectionPreferences.getLastSuccessfulConnection()
+            if (cached != null) {
+                currentConnectionStrategy = ConnectionStrategy.CACHED_IP
+                connectWebSocket(cached.ip, cached.port)
+            }
         }
     }
 
@@ -325,6 +367,12 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun connectWebSocket(host: String, port: Int) {
+        // Don't attempt connection if already connected
+        if (_connectionState.value == ConnectionState.CONNECTED) {
+            Log.d(TAG, "Already connected, skipping connection attempt to $host:$port")
+            return
+        }
+        
         val url = "ws://$host:$port"
         Log.d(TAG, "Attempting WebSocket connection to: $url")
         
@@ -348,9 +396,19 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     connectionPreferences.saveSuccessfulConnection(host, port)
                 }
                 
+                // Start ping to keep connection alive
+                startPing()
+                
                 // Stop mDNS discovery if it's running
                 if (currentConnectionStrategy != ConnectionStrategy.MDNS) {
-                    nsdManager?.stopServiceDiscovery(discoveryListener)
+                    if (isDiscoveryActive) {
+                        try {
+                            nsdManager?.stopServiceDiscovery(discoveryListener)
+                            isDiscoveryActive = false
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error stopping discovery after connection: ${e.message}")
+                        }
+                    }
                 }
             }
             
@@ -376,10 +434,14 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
             
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket connection closed: $code - $reason")
-                _connectionState.value = ConnectionState.DISCONNECTED
                 
-                if (!isReconnecting) {
-                    startReconnection()
+                // Only trigger reconnection if it's not a normal closure or if we're not connected
+                if (code != 1000 || _connectionState.value != ConnectionState.CONNECTED) {
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    
+                    if (!isReconnecting) {
+                        startReconnection()
+                    }
                 }
             }
         })
@@ -394,8 +456,20 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         reconnectJob?.cancel()
         reconnectJob = connectionScope.launch {
             while (isReconnecting && reconnectAttempts < maxReconnectAttempts) {
-                delay(reconnectDelayMs * (reconnectAttempts + 1))
+                // Calculate delay with exponential backoff, but cap it at 10 seconds
+                val delay = minOf(reconnectDelayMs * (reconnectAttempts + 1), 10000L)
+                Log.d(TAG, "Reconnection attempt ${reconnectAttempts + 1}/${maxReconnectAttempts} in ${delay}ms")
+                delay(delay)
                 reconnectAttempts++
+                
+                // Always try cached connection first if available
+                val cached = connectionPreferences.getLastSuccessfulConnection()
+                if (cached != null && currentConnectionStrategy != ConnectionStrategy.CACHED_IP) {
+                    Log.d(TAG, "Trying cached connection: ${cached.ip}:${cached.port}")
+                    currentConnectionStrategy = ConnectionStrategy.CACHED_IP
+                    connectWebSocket(cached.ip, cached.port)
+                    continue
+                }
                 
                 when (currentConnectionStrategy) {
                     ConnectionStrategy.CACHED_IP -> {
@@ -408,19 +482,30 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                     }
                     ConnectionStrategy.MDNS -> {
                         // Try to restart mDNS discovery
-                        nsdManager?.let { manager ->
+                        if (nsdManager != null) {
                             try {
-                                manager.stopServiceDiscovery(discoveryListener)
-                                delay(1000)
-                                manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+                                // Clean up any existing discovery first
+                                if (isDiscoveryActive) {
+                                    nsdManager?.stopServiceDiscovery(discoveryListener)
+                                    isDiscoveryActive = false
+                                    delay(500) // Brief pause
+                                }
+                                // Start fresh discovery
+                                nsdManager?.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+                                isDiscoveryActive = true
+                                Log.d(TAG, "Restarted mDNS discovery")
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error restarting mDNS discovery: ${e.message}")
-                                currentConnectionStrategy = ConnectionStrategy.DOMAIN_NAME
+                                isDiscoveryActive = false
+                                currentConnectionStrategy = ConnectionStrategy.CACHED_IP
                             }
+                        } else {
+                            currentConnectionStrategy = ConnectionStrategy.CACHED_IP
                         }
                     }
                     ConnectionStrategy.DOMAIN_NAME -> {
-                        connectWebSocket("remote-control.local", 8765)
+                        // Skip domain name - it's not working reliably
+                        currentConnectionStrategy = ConnectionStrategy.MDNS
                     }
                 }
                 
@@ -428,13 +513,14 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
                 if (_connectionState.value != ConnectionState.CONNECTED) {
                     currentConnectionStrategy = when (currentConnectionStrategy) {
                         ConnectionStrategy.CACHED_IP -> ConnectionStrategy.MDNS
-                        ConnectionStrategy.MDNS -> ConnectionStrategy.DOMAIN_NAME
+                        ConnectionStrategy.MDNS -> ConnectionStrategy.CACHED_IP
                         ConnectionStrategy.DOMAIN_NAME -> ConnectionStrategy.MDNS
                     }
                 }
             }
             
             if (reconnectAttempts >= maxReconnectAttempts) {
+                Log.w(TAG, "Max reconnection attempts reached, giving up")
                 isReconnecting = false
                 _connectionState.value = ConnectionState.DISCONNECTED
             }
@@ -453,18 +539,22 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     private val discoveryListener = object : NsdManager.DiscoveryListener {
         override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
             Log.e(TAG, "Discovery start failed for $serviceType with error code: $errorCode")
+            isDiscoveryActive = false
         }
 
         override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {
             Log.e(TAG, "Discovery stop failed for $serviceType with error code: $errorCode")
+            isDiscoveryActive = false
         }
 
         override fun onDiscoveryStarted(serviceType: String?) {
             Log.d(TAG, "Discovery started for service type: $serviceType")
+            isDiscoveryActive = true
         }
 
         override fun onDiscoveryStopped(serviceType: String?) {
             Log.d(TAG, "Discovery stopped for service type: $serviceType")
+            isDiscoveryActive = false
         }
 
         override fun onServiceFound(service: NsdServiceInfo?) {
@@ -550,37 +640,11 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun sendMouseScroll(amount: Int) {
-        val currentTime = System.currentTimeMillis()
-        
-        // Accumulate scroll amount
-        accumulatedScroll += amount
-        
-        // Cancel any pending scroll
-        scrollJob?.cancel()
-        
-        // If we haven't sent a scroll recently, send immediately
-        if (currentTime - lastScrollTime >= minScrollInterval) {
-            sendAccumulatedScroll()
-        } else {
-            // Otherwise schedule to send after the interval
-            scrollJob = connectionScope.launch {
-                delay(minScrollInterval - (currentTime - lastScrollTime))
-                sendAccumulatedScroll()
-            }
-        }
-    }
-    
-    private fun sendAccumulatedScroll() {
-        if (accumulatedScroll == 0) return
-        
         val json = JSONObject()
         json.put("type", "mouse_scroll")
-        json.put("amount", accumulatedScroll)
-        Log.d(TAG, "Sending mouse scroll: $accumulatedScroll")
+        json.put("amount", amount)
+        Log.d(TAG, "Sending mouse scroll: $amount")
         send(json)
-        
-        lastScrollTime = System.currentTimeMillis()
-        accumulatedScroll = 0
     }
 
     fun sendKeyType(text: String, interval: Double = 0.01) {
@@ -676,6 +740,11 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
         sendKeyPress(keyString)
     }
 
+    fun clearConnectionCache() {
+        Log.d(TAG, "Clearing connection cache")
+        connectionPreferences.clearConnectionCache()
+    }
+
     fun manualReconnect() {
         Log.d(TAG, "Manual reconnection requested")
         if (_connectionState.value == ConnectionState.RECONNECTING) {
@@ -683,20 +752,16 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         
+        // Clear cache on manual reconnect to force fresh discovery
+        clearConnectionCache()
+        
         cleanupConnections()
         reconnectAttempts = 0
         isReconnecting = false
         _connectionState.value = ConnectionState.CONNECTING
         
-        // Start fresh connection attempt
-        when (currentConnectionStrategy) {
-            ConnectionStrategy.CACHED_IP -> {
-                connectionPreferences.getLastSuccessfulConnection()?.let {
-                    tryConnect(it.ip, it.port)
-                } ?: startMDNSDiscovery(null)
-            }
-            else -> startMDNSDiscovery(null)
-        }
+        // Start fresh connection attempt with mDNS discovery
+        startMDNSDiscovery(null)
     }
 
     private fun send(json: JSONObject) {
@@ -710,6 +775,22 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
             Log.e(TAG, "Error sending message: ${e.message}")
             _connectionState.value = ConnectionState.DISCONNECTED
             startReconnection()
+        }
+    }
+
+    private fun startPing() {
+        pingJob?.cancel()
+        pingJob = connectionScope.launch {
+            while (_connectionState.value == ConnectionState.CONNECTED) {
+                delay(pingInterval)
+                try {
+                    webSocket?.send("ping")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending ping: ${e.message}")
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    startReconnection()
+                }
+            }
         }
     }
 } 

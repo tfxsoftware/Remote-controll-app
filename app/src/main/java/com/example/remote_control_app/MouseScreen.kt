@@ -137,8 +137,8 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
                             detectVerticalDragGestures { change, dragAmount ->
                                 // Convert drag amount to scroll amount with better sensitivity
                                 // Negative dragAmount means dragging up, which should scroll down
-                                // Increased divisor for more sensible scrolling (less sensitive)
-                                val scrollAmount = -dragAmount.toInt() / 16
+                                // Much more fluid and responsive scrolling
+                                val scrollAmount = -dragAmount.toInt() / 1
                                 
                                 // Only send scroll if there's meaningful movement
                                 if (scrollAmount != 0) {
