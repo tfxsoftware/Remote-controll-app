@@ -73,6 +73,12 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     private var accumulatedY = 0
     private var mouseMovementJob: Job? = null
     
+    // Scroll handling
+    private var lastScrollTime = 0L
+    private val minScrollInterval = 50L // Minimum 50ms between scroll events
+    private var accumulatedScroll = 0
+    private var scrollJob: Job? = null
+    
     companion object {
         private const val TAG = "RemoteControlViewModel"
     }
@@ -544,11 +550,37 @@ class RemoteControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun sendMouseScroll(amount: Int) {
+        val currentTime = System.currentTimeMillis()
+        
+        // Accumulate scroll amount
+        accumulatedScroll += amount
+        
+        // Cancel any pending scroll
+        scrollJob?.cancel()
+        
+        // If we haven't sent a scroll recently, send immediately
+        if (currentTime - lastScrollTime >= minScrollInterval) {
+            sendAccumulatedScroll()
+        } else {
+            // Otherwise schedule to send after the interval
+            scrollJob = connectionScope.launch {
+                delay(minScrollInterval - (currentTime - lastScrollTime))
+                sendAccumulatedScroll()
+            }
+        }
+    }
+    
+    private fun sendAccumulatedScroll() {
+        if (accumulatedScroll == 0) return
+        
         val json = JSONObject()
         json.put("type", "mouse_scroll")
-        json.put("amount", amount)
-        Log.d(TAG, "Sending mouse scroll: $json")
+        json.put("amount", accumulatedScroll)
+        Log.d(TAG, "Sending mouse scroll: $accumulatedScroll")
         send(json)
+        
+        lastScrollTime = System.currentTimeMillis()
+        accumulatedScroll = 0
     }
 
     fun sendKeyType(text: String, interval: Double = 0.01) {

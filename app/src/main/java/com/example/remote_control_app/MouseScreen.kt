@@ -135,20 +135,37 @@ fun MouseScreen(viewModel: RemoteControlViewModel) {
                         )
                         .pointerInput(Unit) {
                             detectVerticalDragGestures { change, dragAmount ->
-                                // Convert drag amount to scroll amount
+                                // Convert drag amount to scroll amount with better sensitivity
                                 // Negative dragAmount means dragging up, which should scroll down
-                                // Increased divisor to reduce sensitivity
-                                val scrollAmount = -dragAmount.toInt() / 8
-                                viewModel.sendMouseScroll(scrollAmount)
+                                // Increased divisor for more sensible scrolling (less sensitive)
+                                val scrollAmount = -dragAmount.toInt() / 16
+                                
+                                // Only send scroll if there's meaningful movement
+                                if (scrollAmount != 0) {
+                                    viewModel.sendMouseScroll(scrollAmount)
+                                }
                             }
                         }
                 ) {
-                    Text(
-                        text = "⇅",
-                        fontSize = 24.sp,
-                        color = Color(0xFF3F51B5),
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Text(
+                            text = "⇅",
+                            fontSize = 20.sp,
+                            color = Color(0xFF3F51B5),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Scroll",
+                            fontSize = 10.sp,
+                            color = Color(0xFF3F51B5),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
         }
